@@ -1,0 +1,74 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: tf-demo-
+  namespace: argo
+spec:
+  serviceAccountName: workflow-runner
+  entrypoint: main
+  volumes:
+    - name: work
+      emptyDir: {}
+  arguments:
+    parameters:
+      - name: repo_url
+        value: "https://github.com/yogenderPalChandra/argowf-terraform-kind.git"
+      - name: revision
+        value: "main"
+      - name: customer_impersonate_sa
+        value: "sa-comcd-deployment@mlops-340210.iam.gserviceaccount.com"
+      - name: tf_backend_bucket
+        value: "mlops-340210-argowf_tf_state"
+      - name: tf_backend_prefix
+        value: "state/tf-demo"
+      - name: project_id
+        value: "mlops-340210"
+
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: clone
+            template: clone
+          - name: tf-init
+            dependencies: [clone]
+            templateRef:
+              name: terraform-init
+              template: terraform-init
+            arguments:
+              parameters:
+                - name: workdir
+                  value: /work/repo
+                - name: customer_impersonate_sa
+                  value: "{{workflow.parameters.customer_impersonate_sa}}"
+                - name: tf_backend_bucket
+                  value: "{{workflow.parameters.tf_backend_bucket}}"
+                - name: tf_backend_prefix
+                  value: "{{workflow.parameters.tf_backend_prefix}}"
+          - name: tf-plan
+            dependencies: [tf-init]
+            templateRef:
+              name: terraform-plan
+              template: terraform-plan
+            arguments:
+              parameters:
+                - name: workdir
+                  value: /work/repo
+                - name: customer_impersonate_sa
+                  value: "{{workflow.parameters.customer_impersonate_sa}}"
+                - name: project_id
+                  value: "{{workflow.parameters.project_id}}"
+
+    - name: clone
+      container:
+        image: alpine/git:2.45.2
+        command: [sh, -lc]
+        args:
+          - |
+            git clone "{{workflow.parameters.repo_url}}" /work/repo
+            cd /work/repo
+            git checkout "{{workflow.parameters.revision}}"
+            ls -la
+      volumeMounts:
+        - name: work
+          mountPath: /work

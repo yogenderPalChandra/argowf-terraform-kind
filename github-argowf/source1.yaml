@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: github-noop-sensor
+  namespace: argo-events
+spec:
+  template:
+    serviceAccountName: sensor-submit-workflow
+
+  dependencies:
+    - name: webhook-dep
+      eventSourceName: bitbucket-repo
+      eventName: bitbucket-webhook
+
+  triggers:
+    - template:
+        name: noop-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: webhook-noop-
+                namespace: argo
+              spec:
+                serviceAccountName: workflow-runner
+                entrypoint: main
+                arguments:
+                  parameters:
+                    - name: payload
+                      value: "empty"
+                templates:
+                  - name: main
+                    container:
+                      image: alpine:3.20
+                      command: [sh, -c]
+                      args:
+                        - |
+                          echo "Webhook received!"
+                          echo "Payload:"
+                          echo '{{workflow.parameters.payload}}'
+          parameters:
+            - src:
+                dependencyName: webhook-dep
+                dataKey: body
+              dest: spec.arguments.parameters.0.value

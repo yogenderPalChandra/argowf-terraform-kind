@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: bitbucket-trigger
+  namespace: argo-events
+spec:
+  dependencies:
+    - name: webhook-dep
+      eventSourceName: bitbucket-repo
+      eventName: bitbucket-webhook
+  triggers:
+    - template:
+        name: run-order-workflow
+        argoWorkflow:
+          group: argoproj.io
+          version: v1alpha1
+          resource: workflows
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: bitbucket-order-
+              spec:
+                entrypoint: detect-order-step
+                templates:
+                  - name: detect-order-step
+                    steps:
+                      - - name: clone-repo
+                          template: git-clone
+                      - - name: process-order
+                          template: process-order
+                  - name: git-clone
+                    container:
+                      image: alpine/git
+                      command: ["/bin/sh", "-c"]
+                      args: ["git clone https://<BITBUCKET_USERNAME>:<BITBUCKET_APP_PASSWORD>@bitbucket.org/<workspace>/<repo>.git /src"]
+                  - name: process-order
+                    container:
+                      image: python:3.11
+                      command: ["/bin/sh", "-c"]
+                      args:
+                        - |
+                          pip install pyyaml
+                          python - <<EOF
+                          import yaml, os, subprocess
+                          with open('/src/order.yaml') as f:
+                              order = yaml.safe_load(f)
+                          step = order.get('step')
+                          if step == 'terraform-aks':
+                              subprocess.run('terraform -chdir=/src/terraform init', shell=True)
+                              subprocess.run('terraform -chdir=/src/terraform plan', shell=True)
+                          elif step == 'helm':
+                              subprocess.run('helm upgrade --install my-app /src/helm/my-app', shell=True)
+                          EOF

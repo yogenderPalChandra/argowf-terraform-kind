@@ -30,3 +30,9 @@ resource "google_storage_bucket" "demo" {
 resource "random_id" "suffix" {
   byte_length = 4
 }
+
+resource "google_storage_bucket_object" "argo_test_folder" {
+  name    = "argo-test-folder/"
+  content = " "
+  bucket  = google_storage_bucket.demo.name
+}

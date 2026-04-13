@@ -1,14 +1,15 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  generateName: tf-demo-
+  name: tf-demo-workflow
   namespace: argo
 spec:
   serviceAccountName: workflow-runner
   entrypoint: main
-  volumes:
-    - name: work
-      emptyDir: {}
+  hostAliases:
+    - ip: "140.82.121.4"  # replace with output of: dig github.com @8.8.8.8 +short
+      hostnames:
+        - "github.com"
   arguments:
     parameters:
       - name: repo_url
@@ -29,7 +30,17 @@ spec:
       dag:
         tasks:
           - name: clone
-            template: clone
+            templateRef:
+              name: git-clone
+              template: git-clone
+            arguments:
+              parameters:
+                - name: repo_url
+                  value: "{{workflow.parameters.repo_url}}"
+                - name: revision
+                  value: "{{workflow.parameters.revision}}"
+                - name: payload
+                  value: "{}"
           - name: tf-init
             dependencies: [clone]
             templateRef:
@@ -58,17 +69,16 @@ spec:
                   value: "{{workflow.parameters.customer_impersonate_sa}}"
                 - name: project_id
                   value: "{{workflow.parameters.project_id}}"
-
-    - name: clone
-      container:
-        image: alpine/git:2.45.2
-        command: [sh, -lc]
-        args:
-          - |
-            git clone "{{workflow.parameters.repo_url}}" /work/repo
-            cd /work/repo
-            git checkout "{{workflow.parameters.revision}}"
-            ls -la
-      volumeMounts:
-        - name: work
-          mountPath: /work
+          - name: tf-apply
+            dependencies: [tf-plan]
+            templateRef:
+              name: terraform-apply
+              template: terraform-apply
+            arguments:
+              parameters:
+                - name: workdir
+                  value: /work/repo
+                - name: customer_impersonate_sa
+                  value: "{{workflow.parameters.customer_impersonate_sa}}"
+                - name: project_id
+                  value: "{{workflow.parameters.project_id}}"

@@ -1,0 +1,204 @@
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: git-clone
+  namespace: argo
+spec:
+  templates:
+    - name: git-clone
+      inputs:
+        parameters:
+          - name: repo_url
+          - name: revision
+          # optional: to print payload for debugging
+          - name: payload
+            default: "{}"
+      volumes:
+        - name: workdir
+          persistentVolumeClaim:
+            claimName: tf-workdir-pvc
+      container:
+        image: alpine/git:2.45.2
+        workingDir: /work
+        command: [sh, -lc]
+        env:
+          - name: GIT_SSL_NO_VERIFY
+            value: "true"
+        args:
+          - |
+            set -e
+            echo "Webhook payload (debug, first 2KB):"
+            echo '{{inputs.parameters.payload}}' | head -c 2000 || true
+            echo
+
+            rm -rf /work/repo
+            git clone "{{inputs.parameters.repo_url}}" /work/repo
+            cd /work/repo
+
+            # make revision work whether it's branch/tag/SHA
+            git fetch --all --tags
+            git checkout "{{inputs.parameters.revision}}"
+
+            echo "Repo ready at /work/repo"
+            ls -la /work/repo
+
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: terraform-init
+  namespace: argo
+spec:
+  templates:
+    - name: terraform-init
+      inputs:
+        parameters:
+          - name: workdir
+          - name: customer_impersonate_sa
+          - name: tf_backend_bucket
+          - name: tf_backend_prefix
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: gcp-platform-sa-key
+        - name: workdir
+          persistentVolumeClaim:
+            claimName: tf-workdir-pvc  
+      container:
+        image: hashicorp/terraform:1.7.5
+        workingDir: "{{inputs.parameters.workdir}}"
+        command: [sh, -lc]
+        env:
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /var/secrets/google/key.json
+          - name: GOOGLE_IMPERSONATE_SERVICE_ACCOUNT
+            value: "{{inputs.parameters.customer_impersonate_sa}}"
+        args:
+          - |
+            set -e
+            echo "PWD=$(pwd)"
+            ls -la "{{inputs.parameters.workdir}}"
+
+            echo "cd..ing to /work/repo/terraform/terraform-code"
+            cd "{{inputs.parameters.workdir}}/terraform/terraform-code"
+
+            terraform version
+            terraform init \
+              -backend-config="bucket={{inputs.parameters.tf_backend_bucket}}" \
+              -backend-config="prefix={{inputs.parameters.tf_backend_prefix}}"
+        volumeMounts:
+          - name: gcp-sa
+            mountPath: /var/secrets/google
+            readOnly: true
+          - name: workdir
+            mountPath: /work
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: terraform-plan
+  namespace: argo
+spec:
+  templates:
+    - name: terraform-plan
+      inputs:
+        parameters:
+          - name: workdir
+          - name: customer_impersonate_sa
+          - name: project_id
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: gcp-platform-sa-key
+        - name: workdir
+          persistentVolumeClaim:
+            claimName: tf-workdir-pvc
+      container:
+        image: hashicorp/terraform:1.7.5
+        workingDir: "{{inputs.parameters.workdir}}"
+        command: [sh, -lc]
+        env:
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /var/secrets/google/key.json
+          - name: GOOGLE_IMPERSONATE_SERVICE_ACCOUNT
+            value: "{{inputs.parameters.customer_impersonate_sa}}"
+          # This drives provider "google" { project = var.project_id }
+          - name: TF_VAR_project_id
+            value: "{{inputs.parameters.project_id}}"
+        args:
+          - |
+            set -e
+            echo "PWD=$(pwd)"
+            ls -la "{{inputs.parameters.workdir}}"
+
+
+            echo "cd..ing to /work/repo/terraform/terraform-code"
+            cd "{{inputs.parameters.workdir}}/terraform/terraform-code"
+
+            terraform version
+            terraform plan -out=tfplan
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+          - name: gcp-sa
+            mountPath: /var/secrets/google
+            readOnly: true
+---
+
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: terraform-apply
+  namespace: argo
+spec:
+  templates:
+    - name: terraform-apply
+      inputs:
+        parameters:
+          - name: workdir
+          - name: customer_impersonate_sa
+          - name: project_id
+      volumes:
+        - name: gcp-sa
+          secret:
+            secretName: gcp-platform-sa-key
+        - name: workdir
+          persistentVolumeClaim:
+            claimName: tf-workdir-pvc
+      container:
+        image: hashicorp/terraform:1.7.5
+        workingDir: "{{inputs.parameters.workdir}}"
+        command: [sh, -lc]
+        env:
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /var/secrets/google/key.json
+          - name: GOOGLE_IMPERSONATE_SERVICE_ACCOUNT
+            value: "{{inputs.parameters.customer_impersonate_sa}}"
+          - name: TF_VAR_project_id
+            value: "{{inputs.parameters.project_id}}"
+        args:
+          - |
+            set -euo pipefail
+
+            # IMPORTANT: cd to where your TF code actually is
+            echo "cd..ing to /work/repo/terraform/terraform-code"
+            cd "{{inputs.parameters.workdir}}/terraform/terraform-code"
+
+            echo "PWD=$(pwd)"
+            ls -la
+            terraform version
+
+            # Apply exactly what was planned (requires tfplan file exists)
+            terraform apply -auto-approve -no-color tfplan
+        volumeMounts:
+          - name: workdir
+            mountPath: /work
+          - name: gcp-sa
+            mountPath: /var/secrets/google
+            readOnly: true

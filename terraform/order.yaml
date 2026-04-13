@@ -1,4 +1,7 @@
-steps:
+Steps:
   step: terraform-google
-  path: "terraform-code"
+  path: "terraform/terraform-code"
+  state_prefix: state/tf-demo
+  project: ""
   
+

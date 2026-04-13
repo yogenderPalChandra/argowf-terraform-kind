@@ -1,0 +1,140 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: github-noop-sensor
+  namespace: argo-events
+spec:
+  template:
+    serviceAccountName: sensor-submit-workflow
+
+  dependencies:
+    - name: webhook-dep
+      eventSourceName: bitbucket-repo
+      eventName: bitbucket-webhook
+
+  triggers:
+    - template:
+        name: terraform-workflow
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: tf-demo-
+                namespace: argo
+              spec:
+                serviceAccountName: workflow-runner
+                entrypoint: main
+
+                # IMPORTANT: use your existing shared PVC
+                volumes:
+                  - name: workdir
+                    persistentVolumeClaim:
+                      claimName: tf-workdir-pvc
+
+                arguments:
+                  parameters:
+                    # These will be overwritten by trigger parameters (repo_url/revision),
+                    # but keeping defaults makes it easy to run even if mapping fails.
+                    - name: repo_url
+                      value: " "
+                    - name: revision
+                      value: "main"
+
+                    - name: customer_impersonate_sa
+                      value: "sa-comcd-deployment@mlops-340210.iam.gserviceaccount.com"
+                    - name: tf_backend_bucket
+                      value: "mlops-340210-argowf_tf_state"
+                    - name: tf_backend_prefix
+                      value: "state/tf-demo"
+                    - name: project_id
+                      value: "mlops-340210"
+
+                    # For debugging: store webhook body into the workflow (optional)
+                    - name: payload
+                      value: "{}"
+                    - name: ref
+                      value: ""
+
+                templates:
+                  - name: main
+                    dag:
+                      tasks:
+                        - name: clone
+                          templateRef:
+                            name: git-clone
+                            template: git-clone
+                          arguments:
+                            parameters:
+                              - name: repo_url
+                                value: "{{workflow.parameters.repo_url}}"
+                              - name: revision
+                                value: "{{workflow.parameters.revision}}"
+                              - name: payload
+                                value: "{{workflow.parameters.payload}}"
+                        - name: tf-init
+                          dependencies: [clone]
+                          templateRef:
+                            name: terraform-init
+                            template: terraform-init
+                          arguments:
+                            parameters:
+                              - name: workdir
+                                value: /work/repo
+                              - name: customer_impersonate_sa
+                                value: "{{workflow.parameters.customer_impersonate_sa}}"
+                              - name: tf_backend_bucket
+                                value: "{{workflow.parameters.tf_backend_bucket}}"
+                              - name: tf_backend_prefix
+                                value: "{{workflow.parameters.tf_backend_prefix}}"
+
+                        - name: tf-plan
+                          dependencies: [tf-init]
+                          templateRef:
+                            name: terraform-plan
+                            template: terraform-plan
+                          arguments:
+                            parameters:
+                              - name: workdir
+                                value: /work/repo
+                              - name: customer_impersonate_sa
+                                value: "{{workflow.parameters.customer_impersonate_sa}}"
+                              - name: project_id
+                                value: "{{workflow.parameters.project_id}}"
+                        - name: tf-apply
+                          dependencies: [tf-plan]
+                          when: "'{{workflow.parameters.ref}}' == 'refs/heads/main'"
+                          templateRef:
+                            name: terraform-apply
+                            template: terraform-apply
+                          arguments:
+                            parameters:
+                              - name: workdir
+                                value: /work/repo
+                              - name: customer_impersonate_sa
+                                value: "{{workflow.parameters.customer_impersonate_sa}}"
+                              - name: project_id
+                                value: "{{workflow.parameters.project_id}}"
+
+          parameters:
+            # repo_url <- GitHub repo clone URL
+            - src:
+                dependencyName: webhook-dep
+                dataKey: body.repository.clone_url
+              dest: spec.arguments.parameters.0.value
+            - src:
+                # revision <- commit SHA (recommended)
+                dependencyName: webhook-dep
+                dataKey: body.after
+              dest: spec.arguments.parameters.1.value
+            # payload <- whole body (debug)
+            - src:
+                dependencyName: webhook-dep
+                dataKey: body
+              dest: spec.arguments.parameters.6.value
+            - src:
+                dependencyName: webhook-dep
+                dataKey: body.ref
+              dest: spec.arguments.parameters.7.value
